@@ -1,0 +1,55 @@
+name: Update parent issue sub-issue table
+on:
+  issues:
+    types: [opened, edited, reopened, labeled, unlabeled, assigned, unassigned]
+  workflow_dispatch:
+
+permissions:
+  issues: write
+
+jobs:
+  build-table:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Build & update table
+        uses: actions/github-script@v6
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const parent_number = 1; // <--- set this
+
+            // 1) fetch sub-issues via REST
+            const r = await github.request('GET /repos/{owner}/{repo}/issues/{issue_number}/sub_issues', {
+              owner, repo, issue_number: parent_number
+            });
+            const subs = r.data || [];
+
+            // 2) build markdown table
+            let md = '| Sub-issue | State | Assignee |\n|---|---:|---|\n';
+            for (const s of subs) {
+              const title = s.title.replace(/\n/g,' ');
+              const url = s.html_url;
+              const state = s.state;
+              const assignee = s.assignee ? `@${s.assignee.login}` : '';
+              md += `| [#${s.number} ${title}](${url}) | ${state} | ${assignee} |\n`;
+            }
+
+            // 3) insert or replace between markers in parent issue body
+            const markers = {start: '<!-- SUBISSUE_TABLE_START -->', end: '<!-- SUBISSUE_TABLE_END -->'};
+            const parent = await github.request('GET /repos/{owner}/{repo}/issues/{issue_number}', { owner, repo, issue_number: parent_number });
+            const body = parent.data.body || '';
+            let newBody;
+            if (body.includes(markers.start) && body.includes(markers.end)) {
+              newBody = body.replace(new RegExp(`${markers.start}[\\s\\S]*?${markers.end}`), `${markers.start}\n\n${md}\n${markers.end}`);
+            } else {
+              newBody = `${body}\n\n${markers.start}\n\n${md}\n${markers.end}`;
+            }
+
+            // 4) update parent issue body
+            await github.request('PATCH /repos/{owner}/{repo}/issues/{issue_number}', {
+              owner, repo, issue_number: parent_number, body: newBody
+            });
+
+            core.info('Parent issue body updated with sub-issue table.');
